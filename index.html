@@ -1,0 +1,863 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>xtboard</title>
+<style>
+  :root{
+    --bg:#121212; --bg2:#17181c; --card:#1c1e24; --line:#2a2d36; --line2:#333743;
+    --text:#e6e8ee; --dim:#9aa0ae; --faint:#6b7180;
+    --accent:#bb86fc;
+    --ready:#5c9dff; --running:#ff9800; --blocked:#f44336; --done:#4caf50; --todo:#8a8f98;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{
+    background:var(--bg); color:var(--text);
+    font:14px/1.5 system-ui,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    display:flex; flex-direction:column; min-height:100vh;
+  }
+  a{color:var(--accent)}
+  button{font:inherit; cursor:pointer}
+  input,select,textarea{
+    font:inherit; color:var(--text); background:var(--bg2);
+    border:1px solid var(--line); border-radius:8px; padding:6px 9px; outline:none;
+  }
+  input:focus,select:focus,textarea:focus{border-color:var(--accent)}
+  .mono{font-family:var(--mono)}
+  .dim{color:var(--dim)}
+  /* ---------- top bar ---------- */
+  #topbar{
+    display:flex; align-items:center; gap:16px; padding:10px 18px;
+    background:var(--bg2); border-bottom:1px solid var(--line); flex-wrap:wrap;
+  }
+  #topbar .app{
+    font-size:17px; font-weight:700; letter-spacing:.04em; color:var(--accent);
+    display:flex; align-items:center; gap:8px;
+  }
+  #topbar .app .dot{width:9px;height:9px;border-radius:50%;background:var(--done);display:inline-block}
+  #topbar .app .dot.halted{background:var(--blocked)}
+  #topbar .spacer{flex:1}
+  .btn{
+    background:var(--card); color:var(--text); border:1px solid var(--line);
+    border-radius:9px; padding:7px 13px; font-weight:600; font-size:13px;
+  }
+  .btn:hover{border-color:var(--line2); background:#212430}
+  .btn.danger{color:#ffb4ad; border-color:#4a2523; background:#2a1b1a}
+  .btn.danger:hover{background:#3a2220}
+  .btn.primary{background:#2a2140; border-color:#54417e; color:#d9c6ff}
+  .btn.primary:hover{background:#332a4d}
+  .btn.ok{background:#17301d; border-color:#2c5238; color:#b7e4c1}
+  .btn.ok:hover{background:#1e3d27}
+  .btn:disabled{opacity:.45; cursor:not-allowed}
+  /* ---------- halt banner ---------- */
+  #haltBanner{
+    display:none; align-items:center; gap:10px; padding:9px 18px;
+    background:#2a1312; border-bottom:1px solid #57251f; color:#ffb4ad; font-weight:600;
+  }
+  #haltBanner.show{display:flex}
+  /* ---------- board tabs ---------- */
+  #tabbar{
+    display:flex; align-items:center; gap:10px; padding:10px 18px 0;
+    flex-wrap:wrap; border-bottom:1px solid var(--line); background:var(--bg);
+  }
+  .board-tab{
+    display:flex; align-items:center; gap:8px; padding:7px 12px;
+    background:var(--card); border:1px solid var(--line); border-radius:9px 9px 0 0;
+    color:var(--dim); font-weight:600; font-size:13px;
+  }
+  .board-tab.active{background:var(--bg2); color:var(--text); border-bottom-color:var(--bg2)}
+  .board-tab .cnt{font-family:var(--mono); font-size:11px; color:var(--faint)}
+  .pill{
+    font-size:10px; font-weight:700; letter-spacing:.06em; padding:2px 7px; border-radius:20px;
+    border:1px solid transparent;
+  }
+  .pill.active{color:#9be0ac; background:#16321d; border-color:#2c5238}
+  .pill.paused{color:#ffd59b; background:#3a2c14; border-color:#6e5523}
+  .pill.clickable{cursor:pointer}
+  /* ---------- layout ---------- */
+  #main{display:flex; flex:1; min-height:0}
+  #boardPane{flex:1; min-width:0; padding:14px 18px; overflow:auto}
+  #h1row{display:flex; align-items:baseline; gap:12px; margin:2px 0 12px}
+  #h1row h1{font-size:18px; margin:0; letter-spacing:.02em}
+  #h1row .sub{font-size:12px; color:var(--faint); font-family:var(--mono)}
+  #cols{
+    display:grid; grid-template-columns:repeat(5,minmax(168px,1fr)); gap:12px; align-items:start;
+  }
+  @media (max-width:1100px){ #cols{grid-template-columns:repeat(3,minmax(168px,1fr))} }
+  @media (max-width:900px){
+    #cols{grid-template-columns:repeat(2,minmax(150px,1fr))}
+    #rail{display:none}
+  }
+  .col{background:var(--bg2); border:1px solid var(--line); border-radius:12px; min-height:120px}
+  .col h2{
+    font-size:11px; letter-spacing:.12em; margin:0; padding:10px 12px 8px;
+    color:var(--dim); display:flex; align-items:center; gap:8px; border-bottom:1px solid var(--line);
+    text-transform:uppercase;
+  }
+  .col h2 .n{font-family:var(--mono); font-size:11px; color:var(--faint); letter-spacing:0}
+  .col .body{padding:9px; display:flex; flex-direction:column; gap:8px; min-height:60px}
+  /* ---------- cards ---------- */
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:10px;
+    padding:9px 10px; cursor:pointer; position:relative; border-left:3px solid var(--c,#888);
+  }
+  .card:hover{border-color:var(--line2); background:#20232d}
+  .card .t{font-weight:600; font-size:13px; margin-bottom:3px; word-break:break-word}
+  .card .meta{display:flex; gap:8px; flex-wrap:wrap; font-size:11px; color:var(--faint); font-family:var(--mono)}
+  .card .br{margin-top:6px; font-size:12px; color:#ff9d94}
+  .card .note{margin-top:4px; font-size:12px; color:var(--dim); word-break:break-word}
+  .col.ready .card{--c:var(--ready)} .col.running .card{--c:var(--running)}
+  .col.blocked .card{--c:var(--blocked)} .col.todo .card{--c:var(--todo)}
+  .col.done .card{--c:var(--done)}
+  .chip{font-size:10px; font-weight:700; letter-spacing:.05em; padding:2px 7px; border-radius:20px; margin-right:6px}
+  .chip.todo{background:#26292f; color:var(--todo)}
+  .chip.ready{background:#132339; color:var(--ready)}
+  .chip.running{background:#38290f; color:var(--running)}
+  .chip.blocked{background:#381513; color:var(--blocked)}
+  .chip.done{background:#15301c; color:var(--done)}
+  .empty{color:var(--faint); font-size:12px; font-style:italic; padding:4px 2px}
+  /* ---------- add task ---------- */
+  #addWrap{display:none}
+  #addRow{display:none}
+  /* ---------- right rail feed ---------- */
+  #rail{
+    width:330px; border-left:1px solid var(--line); background:var(--bg2);
+    display:flex; flex-direction:column; min-height:0;
+  }
+  #rail h2{font-size:11px; letter-spacing:.12em; margin:0; padding:12px 14px 8px; color:var(--dim); text-transform:uppercase; display:flex; gap:8px; align-items:center}
+  #feed{flex:1; overflow:auto; padding:0 10px 12px; display:flex; flex-direction:column; gap:7px}
+  .feeditem{border:1px solid var(--line); background:var(--card); border-radius:9px; padding:7px 9px; font-size:12px}
+  .feeditem .fts{font-family:var(--mono); color:var(--faint); font-size:10.5px; display:block; margin-bottom:2px}
+  .feeditem .fmsg{color:var(--text); word-break:break-word}
+  #ssec{font-size:10px; font-family:var(--mono); letter-spacing:0; color:var(--faint); opacity:.8}
+  #ssec.on{color:#9be0ac; opacity:1}
+  /* ---------- modal ---------- */
+  #overlay{
+    display:none; position:fixed; inset:0; background:rgba(0,0,0,.62); z-index:50;
+    align-items:flex-start; justify-content:center; padding:6vh 16px 4vh; overflow:auto;
+  }
+  #overlay.show{display:flex}
+  #modal{
+    width:min(720px,100%); background:var(--bg2); border:1px solid var(--line2);
+    border-radius:14px; box-shadow:0 18px 60px rgba(0,0,0,.55);
+  }
+  #modal .head{display:flex; align-items:center; gap:10px; padding:14px 16px 10px; border-bottom:1px solid var(--line)}
+  #modal .head .ttl{font-size:15px; font-weight:700}
+  #modal .head .tid{font-family:var(--mono); font-size:11.5px; color:var(--faint)}
+  #modal .head .x{margin-left:auto; background:none; border:none; color:var(--dim); font-size:18px; padding:2px 8px}
+  #modal .body{padding:12px 16px 16px; display:grid; gap:12px}
+  /* ---- add-task modal ---- */
+  #addOverlay{display:none; position:fixed; inset:0; background:rgba(0,0,0,.62); z-index:60;
+    align-items:flex-start; justify-content:center; padding:12vh 16px 4vh; overflow:auto}
+  #addOverlay.show{display:flex}
+  #addModal{width:min(560px,100%); background:var(--bg2); border:1px solid var(--line2);
+    border-radius:14px; box-shadow:0 18px 60px rgba(0,0,0,.55)}
+  #addModal .head{display:flex; align-items:center; gap:10px; padding:14px 16px 10px; border-bottom:1px solid var(--line)}
+  #addModal .head .ttl{font-size:15px; font-weight:700}
+  #addModal .head .x{margin-left:auto; background:none; border:none; color:var(--dim); font-size:18px; padding:2px 8px; cursor:pointer}
+  #addModal .body{padding:14px 16px 16px; display:flex; flex-direction:column; gap:12px}
+  .fl{display:flex; flex-direction:column; gap:5px; font-size:12px; color:var(--dim)}
+  .fl input,.fl select{width:100%; min-width:0}
+  .frow{display:flex; gap:12px}
+  .frow .fl{flex:1}
+  #addBlockedWrap .breq{color:#ff9d94}
+  .addfoot{justify-content:flex-end}
+  .kv{display:flex; gap:10px; font-size:13px; flex-wrap:wrap}
+  .kv .k{color:var(--faint); min-width:80px}
+  .section h3{font-size:11px; letter-spacing:.12em; text-transform:uppercase; color:var(--dim); margin:6px 0 6px}
+  .hist{list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:5px; max-height:150px; overflow:auto}
+  .hist li{font-size:12px; font-family:var(--mono); color:var(--dim); border:1px solid var(--line); border-radius:8px; padding:5px 8px; word-break:break-word}
+  .hist .ts{color:var(--faint); margin-right:8px}
+  .hist .by{color:#c3b3ea; margin-right:8px}
+  .logs{
+    margin:0; padding:8px 10px; background:#0e0f13; border:1px solid var(--line);
+    border-radius:9px; font-family:var(--mono); font-size:11.5px; max-height:180px; overflow:auto;
+    white-space:pre-wrap; word-break:break-word; color:#c8cdd9;
+  }
+  .actrow{display:flex; gap:8px; flex-wrap:wrap; padding-top:2px}
+  /* ---------- toast ---------- */
+  #toasts{position:fixed; right:16px; bottom:16px; z-index:99; display:flex; flex-direction:column; gap:8px; max-width:420px}
+  .toast{
+    background:#20242f; border:1px solid var(--line2); border-left:3px solid var(--accent);
+    border-radius:10px; padding:10px 14px; font-size:13px; box-shadow:0 8px 30px rgba(0,0,0,.5);
+    word-break:break-word;
+  }
+  .toast.err{border-left-color:var(--blocked); background:#2a1716; color:#ffd7d2}
+  .toast.ok{border-left-color:var(--done)}
+</style>
+</head>
+<body>
+
+<header id="topbar">
+  <span class="app"><span class="dot" id="sseDot" title="server connection"></span>xtboard</span>
+  <span class="dim mono" id="stateTs" title="last state timestamp"></span>
+  <span class="spacer"></span>
+  <button class="btn" id="btnPauseAll" title="Halt in drain mode: no new claims, running work finishes">⏸ PAUSE ALL</button>
+  <button class="btn danger" id="btnKill" title="Emergency: kill worker trees, revert dirty repos, unload model">☢ EMERGENCY KILL</button>
+  <button class="btn ok" id="btnResume">▶ RESUME</button>
+</header>
+
+<div id="haltBanner">
+  <span id="haltText">orchestrator is HALTED</span>
+  <span class="spacer" style="flex:1"></span>
+  <button class="btn ok" id="btnResume2">▶ RESUME</button>
+</div>
+
+<nav id="tabbar">
+  <span id="tabs" style="display:flex;gap:10px;flex-wrap:wrap"></span>
+  <span class="spacer" style="flex:1"></span>
+  <button class="btn" id="btnNewBoard">+ New board</button>
+  <button class="btn" id="btnAddToggle">+ Add task</button>
+</nav>
+
+<div id="main">
+  <section id="boardPane">
+    <div id="h1row">
+      <h1 id="boardName"></h1>
+      <span class="sub" id="boardSub"></span>
+    </div>
+    <div id="cols"></div>
+  </section>
+
+  <aside id="rail">
+    <h2>Activity <span id="ssec">sse…</span></h2>
+    <div id="feed"></div>
+  </aside>
+</div>
+
+<div id="overlay">
+  <div id="modal">
+    <div class="head">
+      <span class="chip" id="mChip"></span>
+      <span class="ttl" id="mTitle"></span>
+      <span class="tid" id="mId"></span>
+      <button class="x" id="mClose" title="Close (Esc)">✕</button>
+    </div>
+    <div class="body">
+      <div class="kv"><span class="k">Owner</span><span id="mOwner"></span></div>
+      <div class="kv" id="mClaimRow" hidden><span class="k">Claimed</span><span id="mClaim"></span></div>
+      <div class="kv" id="mBrRow" hidden><span class="k" style="color:#ff9d94">Blocked</span><span id="mBr"></span></div>
+      <div class="kv" id="mFailRow" hidden><span class="k">Fails</span><span id="mFail"></span></div>
+      <div class="kv"><span class="k">Note</span><span id="mNote" class="dim"></span></div>
+      <div class="kv"><span class="k">Times</span><span class="mono dim" id="mTimes"></span></div>
+      <div class="section">
+        <h3>History</h3>
+        <ul class="hist" id="mHist"></ul>
+      </div>
+      <div class="section">
+        <h3>Logs (last 20)</h3>
+        <pre class="logs" id="mLogs"></pre>
+      </div>
+      <div class="actrow" id="mActs"></div>
+    </div>
+  </div>
+</div>
+
+<div id="addOverlay">
+  <div id="addModal">
+    <div class="head">
+      <span class="ttl">＋ New task</span>
+      <button class="x" id="btnAddClose" title="Close (Esc)">✕</button>
+    </div>
+    <div class="body">
+      <label class="fl"><span>Title</span><input id="addTitle" placeholder="Task title (required)"></label>
+      <div class="frow">
+        <label class="fl"><span>Board</span><select id="addBoard"></select></label>
+        <label class="fl"><span>Status</span><select id="addStatus">
+          <option value="todo" selected>todo</option>
+          <option value="ready">ready</option>
+          <option value="blocked">blocked</option>
+        </select></label>
+      </div>
+      <label class="fl"><span>Owner</span><input id="addOwner" placeholder="xtranslator-architect"></label>
+      <label class="fl"><span>Note</span><input id="addNote" placeholder="note (optional)"></label>
+      <label class="fl" id="addBlockedWrap" style="display:none"><span class="breq">Blocked reason (required)</span><input id="addBlocked" placeholder="why is it blocked?"></label>
+      <div class="actrow addfoot">
+        <button class="btn" id="btnAddCancel">Cancel</button>
+        <button class="btn primary" id="btnAddTask">Add task</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="toasts"></div>
+
+<script>
+"use strict";
+/* xtboard web UI — single file, zero deps, zero external assets.
+ * API: /api/state (GET), /api/stream (SSE: state|halt|runs), /api/boards,
+ *      /api/tasks (+ /claim /release /fail /done /block /unblock /log),
+ *      /api/halt {mode,unload}, /api/resume, /api/healthz.
+ */
+const $ = (id) => document.getElementById(id);
+
+const STATUSES = ["ready", "running", "blocked", "todo", "done"];
+const STATUS_LABEL = { todo: "TODO", ready: "READY", running: "RUNNING", blocked: "BLOCKED", done: "DONE" };
+
+let state = null;          // last /api/state
+let activeBoardId = null;  // board.id of selected tab
+let modalTaskId = null;
+const sse = { es: null };
+
+/* ---------------- helpers ---------------- */
+
+function esc(s) {
+  return String(s == null ? "" : s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
+function fmtTs(ts) {
+  if (!ts) return "";
+  // server sends ISO-ish; show local HH:MM:SS + MM-DD when older than today
+  const d = new Date(ts);
+  if (isNaN(d.getTime())) return String(ts);
+  const p = (n) => String(n).padStart(2, "0");
+  const hm = `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+  const now = new Date();
+  const sameDay = d.toDateString() === now.toDateString();
+  return sameDay ? hm : `${p(d.getMonth() + 1)}-${p(d.getDate())} ${hm}`;
+}
+
+function elapsedStr(since) {
+  if (!since) return null;
+  const d = new Date(since);
+  if (isNaN(d.getTime())) return null;
+  let s = Math.max(0, Math.floor((Date.now() - d.getTime()) / 1000));
+  const h = Math.floor(s / 3600); s %= 3600;
+  const m = Math.floor(s / 60); s %= 60;
+  const p = (n) => String(n).padStart(2, "0");
+  return h > 0 ? `${h}h ${p(m)}m ${p(s)}s` : `${m}m ${p(s)}s`;
+}
+
+function toast(msg, kind) {
+  const el = document.createElement("div");
+  el.className = "toast" + (kind ? " " + kind : "");
+  el.textContent = msg;
+  const box = $("toasts");
+  box.appendChild(el);
+  setTimeout(() => el.remove(), kind === "err" ? 9000 : 4500);
+  while (box.children.length > 5) box.firstChild.remove();
+}
+
+async function api(path, opts) {
+  const o = opts || {};
+  let res;
+  try {
+    res = await fetch(path, {
+      method: o.method || "GET",
+      headers: { "Content-Type": "application/json" },
+      body: o.body != null ? JSON.stringify(o.body) : undefined,
+    });
+  } catch (e) {
+    throw new Error("network error: " + e.message);
+  }
+  let data = null;
+  const text = await res.text();
+  if (text) { try { data = JSON.parse(text); } catch { data = { raw: text }; } }
+  if (!res.ok) {
+    const msg = (data && data.error) ? data.error : `HTTP ${res.status}`;
+    throw new Error(msg);
+  }
+  return data;
+}
+
+/* ---------------- core rendering ---------------- */
+
+function boardById(id) {
+  if (!state || !state.boards) return null;
+  return state.boards.find((b) => b.id === id) || null;
+}
+
+function tasksOnBoard(bid) {
+  if (!state || !state.tasks) return [];
+  const first = state.boards && state.boards[0];
+  const out = [];
+  for (const t of Object.values(state.tasks)) {
+    if (t.board === bid) out.push(t);
+    // v1 tasks carry no board → belong to the first board (core.boardOf rule)
+    else if (!t.board && first && first.id === bid) out.push(t);
+  }
+  return out;
+}
+
+function boardCounts(bid) {
+  const c = { todo: 0, ready: 0, running: 0, blocked: 0, done: 0 };
+  for (const t of tasksOnBoard(bid)) c[t.status] = (c[t.status] || 0) + 1;
+  return c;
+}
+
+function render() {
+  if (!state) return;
+  if (!boardById(activeBoardId)) activeBoardId = (state.boards && state.boards[0] && state.boards[0].id) || null;
+  renderHalt();
+  renderTabs();
+  renderBoardPane();
+  renderFeed();
+  renderAddForm();
+  if (modalTaskId) fillModalFromState(modalTaskId);
+}
+
+function renderHalt() {
+  const h = state.halted;
+  const banner = $("haltBanner");
+  if (h) {
+    banner.classList.add("show");
+    $("haltText").textContent = `HALTED — mode: ${h.mode || "drain"}${h.by ? " · by " + h.by : ""}${fmtTs(h.ts) ? " · " + fmtTs(h.ts) : ""} — no new work may be claimed`;
+    $("btnResume").disabled = false;
+    $("btnPauseAll").disabled = true;
+  } else {
+    banner.classList.remove("show");
+    $("btnResume").disabled = true;
+  }
+  $("sseDot").classList.toggle("halted", !!h);
+  $("stateTs").textContent = state.server_ts ? "state " + fmtTs(state.server_ts) : "";
+}
+
+function renderTabs() {
+  const box = $("tabs");
+  box.textContent = "";
+  if (!state.boards) { box.appendChild(placeholder("no boards yet — create one")); return; }
+  for (const b of state.boards) {
+    const c = boardCounts(b.id);
+    const total = c.todo + c.ready + c.running + c.blocked + c.done;
+    const tab = document.createElement("div");
+    tab.className = "board-tab" + (b.id === activeBoardId ? " active" : "");
+    tab.title = "Click: select board · click the pill: " + (b.active ? "pause board" : "resume board");
+    const name = document.createElement("span");
+    name.textContent = b.name;
+    tab.appendChild(name);
+    const pill = document.createElement("span");
+    pill.className = "pill clickable " + (b.active ? "active" : "paused");
+    pill.textContent = b.active ? "ACTIVE" : "PAUSED";
+    pill.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      toggleBoard(b, ev.shiftKey === false ? b.active : true);
+    });
+    tab.appendChild(pill);
+    const cnt = document.createElement("span");
+    cnt.className = "cnt";
+    cnt.textContent = `${total} (${c.running}⚡ ${c.blocked}❗)`;
+    tab.appendChild(cnt);
+    tab.addEventListener("click", () => { setBoard(b.id); });
+    box.appendChild(tab);
+  }
+  function placeholder(txt) {
+    const s = document.createElement("span");
+    s.className = "dim";
+    s.textContent = txt;
+    return s;
+  }
+}
+
+function renderBoardPane() {
+  const b = boardById(activeBoardId);
+  $("boardName").textContent = b ? b.name : "no boards";
+  $("boardSub").textContent = b ? (b.active ? "active board" : "PAUSED board — claims are refused") : "create a board to begin";
+  const tasks = tasksOnBoard(activeBoardId);
+  const cols = $("cols");
+  cols.textContent = "";
+  for (const st of STATUSES) {
+    const list = tasks.filter((t) => t.status === st)
+      .sort((a, z) => (a.created < z.created ? -1 : a.created > z.created ? 1 : a.id < z.id ? -1 : 1));
+    const col = document.createElement("div");
+    col.className = "col " + st;
+    const h = document.createElement("h2");
+    h.innerHTML = `${STATUS_LABEL[st]} <span class="n">${list.length}</span>`;
+    col.appendChild(h);
+    const body = document.createElement("div");
+    body.className = "body";
+    if (!list.length) {
+      const e = document.createElement("div");
+      e.className = "empty";
+      e.textContent = "—";
+      body.appendChild(e);
+    }
+    for (const t of list) body.appendChild(renderCard(t));
+    col.appendChild(body);
+    cols.appendChild(col);
+  }
+}
+
+function renderCard(t) {
+  const el = document.createElement("div");
+  el.className = "card";
+  let inner = "";
+  inner += `<div class="t">${esc(t.title)}</div>`;
+  inner += `<div class="meta"><span>${esc(t.id)}</span><span>@${esc(t.owner || "?")}</span>`;
+  if (t.claimed_by) inner += `<span>claim ${esc(t.claimed_by)}${t.worker_pid ? " pid " + t.worker_pid : ""}</span>`;
+  inner += `</div>`;
+  if (t.status === "running" && t.claimed_at) {
+    inner += `<div class="meta" data-elapsed="${esc(t.claimed_at)}" title="elapsed since claim">⏱ …</div>`;
+  }
+  if (t.status === "blocked" && t.blocked_reason) {
+    inner += `<div class="br">❗ ${esc(t.blocked_reason)}</div>`;
+  }
+  if (t.fails) inner += `<div class="br">✖ fails: ${t.fails}${t.last_error ? " · " + esc(t.last_error) : ""}</div>`;
+  if (t.note && t.status !== "blocked") inner += `<div class="note">${esc(t.note)}</div>`;
+  el.innerHTML = inner;
+  el.addEventListener("click", () => openModal(t.id));
+  return el;
+}
+
+function renderFeed() {
+  const feed = state.feed || [];
+  const box = $("feed");
+  box.textContent = "";
+  if (!feed.length) {
+    const d = document.createElement("div");
+    d.className = "empty";
+    d.textContent = "no activity yet";
+    box.appendChild(d);
+    return;
+  }
+  for (const f of feed.slice(0, 50)) {
+    const d = document.createElement("div");
+    d.className = "feeditem";
+    d.innerHTML = `<span class="fts">${esc(fmtTs(f.ts))}</span><span class="fmsg">${esc(f.msg)}</span>`;
+    box.appendChild(d);
+  }
+}
+
+function renderAddForm() {
+  const sel = $("addBoard");
+  const cur = sel.value;
+  sel.textContent = "";
+  if (!state.boards) return;
+  const defBoard = activeBoardId || state.boards[0].id;
+  state.boards.forEach((b) => {
+    const o = document.createElement("option");
+    o.value = b.id;
+    o.textContent = b.name;
+    sel.appendChild(o);
+  });
+  sel.value = (boardById(defBoard) ? defBoard : sel.value);
+  if (cur && boardById(cur)) sel.value = cur;
+}
+
+/* ---------------- data actions ---------------- */
+
+async function loadState() {
+  state = await api("/api/state");
+  render();
+}
+
+async function refreshSafe() {
+  try { await loadState(); } catch (e) { toast(e.message, "err"); }
+}
+
+function setBoard(id) {
+  activeBoardId = id;
+  render();
+}
+
+async function act(action, body, taskId) {
+  try {
+    await api(`/api/tasks/${encodeURIComponent(taskId)}/${action}`, { method: "POST", body: body || {} });
+    toast(`task ${taskId} → ${action} OK`, "ok");
+    await refreshSafe();
+  } catch (e) {
+    toast(`✖ ${action}: ${e.message}`, "err");
+  }
+}
+
+async function toggleBoard(b, resume) {
+  try {
+    await api(`/api/boards/${encodeURIComponent(b.id)}`, { method: "PATCH", body: { active: resume } });
+    toast(`board '${b.name}' ${resume ? "resumed" : "paused"}`, "ok");
+    await refreshSafe();
+  } catch (e) {
+    toast(`✖ board '${b.name}': ${e.message}`, "err");
+  }
+}
+
+/* ---------------- modal ---------------- */
+
+function findTask(id) {
+  if (!state || !state.tasks) return null;
+  const norm = id.startsWith("t_") ? id : "t_" + id;
+  if (state.tasks[norm]) return state.tasks[norm];
+  for (const t of Object.values(state.tasks)) if (t.id.endsWith(id) || t.id === norm) return t;
+  return null;
+}
+
+function openModal(id) {
+  modalTaskId = id;
+  $("overlay").classList.add("show");
+  fillModalFromState(id);
+}
+
+function closeModal() {
+  modalTaskId = null;
+  $("overlay").classList.remove("show");
+}
+
+function fillModalFromState(id) {
+  const t = findTask(id);
+  const chip = $("mChip");
+  if (!t) {
+    chip.className = "chip blocked"; chip.textContent = "MISSING";
+    $("mTitle").textContent = id; $("mId").textContent = "";
+    $("mOwner").textContent = "task not found in state — close and retry";
+    $("mNote").textContent = ""; $("mTimes").textContent = ""; $("mHist").innerHTML = "";
+    $("mLogs").textContent = "";
+    $("mClaimRow").hidden = true; $("mBrRow").hidden = true; $("mFailRow").hidden = true;
+    $("mActs").innerHTML = "";
+    return;
+  }
+  chip.className = "chip " + t.status;
+  chip.textContent = STATUS_LABEL[t.status] || t.status;
+  $("mTitle").textContent = t.title;
+  $("mId").textContent = t.id + (t.board ? " · board " + ((boardById(t.board) || {}).name || t.board) : "");
+  $("mOwner").innerHTML = `@${esc(t.owner || "?")}`;
+  const claim = $("mClaimRow");
+  if (t.claimed_by) {
+    claim.hidden = false;
+    let txt = `${esc(t.claimed_by)}`;
+    if (t.claimed_at) {
+      const el = elapsedStr(t.claimed_at);
+      txt += fmtTs(t.claimed_at) ? ` since ${fmtTs(t.claimed_at)}${el ? " (" + el + ")" : ""}` : "";
+    }
+    if (t.worker_pid) txt += ` · pid ${t.worker_pid}`;
+    $("mClaim").innerHTML = txt;
+  } else claim.hidden = true;
+  const br = $("mBrRow");
+  if (t.status === "blocked" && t.blocked_reason) { br.hidden = false; $("mBr").textContent = "❗ " + t.blocked_reason; }
+  else br.hidden = true;
+  const fail = $("mFailRow");
+  if (t.fails) { fail.hidden = false; $("mFail").textContent = `${t.fails}${t.last_error ? " — " + t.last_error : ""}`; }
+  else fail.hidden = true;
+  $("mNote").textContent = t.note ? t.note : "(no note)";
+  $("mTimes").textContent = `created ${fmtTs(t.created)} · updated ${fmtTs(t.updated)}`;
+  const hist = $("mHist");
+  hist.innerHTML = "";
+  const hs = (t.history || []).slice().reverse();
+  if (!hs.length) hist.appendChild(litem("(no history)"));
+  for (const h of hs) {
+    const changes = (h.changes || []).map((c) => `${c.field}: ${esc(c.from || "∅")} → ${esc(c.to || "∅")}`).join(", ");
+    hist.appendChild(litem(`<span class="ts">${esc(fmtTs(h.ts))}</span><span class="by">${esc(h.by || "?")}</span>${changes}`));
+  }
+  function litem(html) {
+    const li = document.createElement("li");
+    if (html.startsWith("(no ")) li.innerHTML = esc(html); else li.innerHTML = html;
+    return li;
+  }
+  const logs = (t.logs || []).slice(-20);
+  $("mLogs").textContent = logs.length
+    ? logs.map((l) => `[${fmtTs(l.ts)}] ${l.by || "?"}: ${l.msg}`).join("\n")
+    : "(no logs)";
+  renderActions(t);
+}
+
+function renderActions(t) {
+  const row = $("mActs");
+  row.innerHTML = "";
+  const mk = (label, cls, fn) => {
+    const b = document.createElement("button");
+    b.className = "btn " + cls;
+    b.textContent = label;
+    b.addEventListener("click", fn);
+    row.appendChild(b);
+  };
+  if (t.status === "ready") {
+    mk("✋ Claim", "primary", () => {
+      const w = prompt("Claim as worker:", "web");
+      if (w == null) return;
+      act("claim", { worker: w.trim() || "web" }, t.id);
+    });
+  }
+  if (t.status === "running") {
+    mk("🏁 Done", "ok", () => {
+      const n = prompt("Completion note (optional):", t.note || "");
+      if (n == null) return;
+      act("done", { note: n }, t.id);
+    });
+    mk("❌ Fail", "danger", () => {
+      const r = prompt("Fail reason:", t.last_error || "");
+      if (r == null) return;
+      if (!r.trim()) { toast("fail needs a reason", "err"); return; }
+      act("fail", { reason: r }, t.id);
+    });
+    mk("⏏ Release", "", () => act("release", {}, t.id));
+  }
+  if ((t.status === "ready" || t.status === "todo" || t.status === "blocked") && t.status !== "blocked") {
+    mk("⛔ Block", "danger", () => {
+      const r = prompt("Blocked reason (required):", t.blocked_reason || "");
+      if (r == null) return;
+      if (!r.trim()) { toast("block needs a reason", "err"); return; }
+      act("block", { reason: r }, t.id);
+    });
+  }
+  if (t.status === "blocked") {
+    mk("🔓 Unblock", "primary", () => {
+      const n = prompt("Note on unblock (optional):", "");
+      if (n == null) return;
+      act("unblock", { note: n }, t.id);
+    });
+    mk("✋ Claim", "primary", () => {
+      const w = prompt("Claim as worker:", "web");
+      if (w == null) return;
+      if (prompt("Task is BLOCKED — claiming will not change its blocked status.\nClaim anyway?", "") === null) return;
+      act("claim", { worker: w.trim() || "web" }, t.id);
+    });
+  }
+  if (t.status === "blocked") {
+    mk("📝 Change reason", "", () => {
+      const r = prompt("New blocked reason:", t.blocked_reason || "");
+      if (r == null) return;
+      try {
+        api(`/api/tasks/${encodeURIComponent(t.id)}`, { method: "PATCH", body: { blocked_reason: r } })
+          .then(() => refreshSafe())
+          .catch((e) => toast(`✖ ${e.message}`, "err"));
+      } catch (e) { toast(`✖ ${e.message}`, "err"); }
+    });
+  }
+  if (t.status === "todo") {
+    mk("🚦 To ready", "primary", () => {
+      api(`/api/tasks/${encodeURIComponent(t.id)}`, { method: "PATCH", body: { status: "ready" } })
+        .then(() => { toast("→ ready", "ok"); refreshSafe(); })
+        .catch((e) => toast(`✖ ${e.message}`, "err"));
+    });
+  }
+  mk("📝 Edit note", "", () => {
+    const n = prompt("New note:", t.note || "");
+    if (n == null) return;
+    try {
+      api(`/api/tasks/${encodeURIComponent(t.id)}`, { method: "PATCH", body: { note: n } })
+        .then(() => { toast("note updated", "ok"); refreshSafe(); })
+        .catch((e) => toast(`✖ ${e.message}`, "err"));
+    } catch (e) { toast(`✖ ${e.message}`, "err"); }
+  });
+  mk("🗑 Log line", "", () => {
+    const m = prompt("Log entry:", "");
+    if (m == null) return;
+    if (!m.trim()) return;
+    act("log", { msg: m }, t.id);
+  });
+  mk("Close", "", closeModal);
+}
+
+/* ---------------- top-bar controls ---------------- */
+
+function haltCtl(mode) {
+  const body = { mode };
+  if (mode === "kill") body.unload = true;
+  api("/api/halt", { method: "POST", body })
+    .then(() => { toast(mode === "kill" ? "EMERGENCY KILL engaged" : "Paused (drain)", mode === "kill" ? "err" : "ok"); refreshSafe(); })
+    .catch((e) => toast(`✖ halt: ${e.message}`, "err"));
+}
+
+function resumeCtl() {
+  api("/api/resume", { method: "POST" })
+    .then(() => { toast("Resumed", "ok"); refreshSafe(); })
+    .catch((e) => toast(`✖ resume: ${e.message}`, "err"));
+}
+
+/* ---------------- SSE ---------------- */
+
+function connectSse() {
+  if (sse.es) { try { sse.es.close(); } catch { /* noop */ } sse.es = null; }
+  const es = new EventSource("/api/stream");
+  sse.es = es;
+  const mark = (up) => {
+    $("ssec").textContent = up ? "live" : "reconnecting";
+    $("ssec").classList.toggle("on", !!up);
+    $("sseDot").style.background = up ? "var(--done)" : "var(--running)";
+  };
+  const onEvent = () => {
+    mark(true);
+    refreshSafe();
+  };
+  es.addEventListener("state", () => onEvent("state"));
+  es.addEventListener("halt", () => onEvent("halt"));
+  es.addEventListener("runs", () => onEvent("runs"));
+  es.addEventListener("open", () => mark(true));
+  es.addEventListener("error", () => mark(false));
+}
+
+/* ---------------- init ---------------- */
+
+function wire() {
+  $("btnPauseAll").addEventListener("click", () => haltCtl("drain"));
+  $("btnKill").addEventListener("click", () => {
+    const ok = confirm("☢ EMERGENCY KILL\n\nKills worker process trees, reverts dirty repos, and unloads the Ollama model.\nThis cannot be undone. Proceed?");
+    if (ok) haltCtl("kill");
+  });
+  $("btnResume").addEventListener("click", resumeCtl);
+  $("btnResume2").addEventListener("click", resumeCtl);
+
+  $("btnNewBoard").addEventListener("click", () => {
+    const name = prompt("New board name:", "");
+    if (name == null) return;
+    const n = name.trim().toLowerCase().replace(/\s+/g, "-");
+    if (!n) { toast("board name empty", "err"); return; }
+    api("/api/boards", { method: "POST", body: { name: n } })
+      .then(() => { toast("board added", "ok"); return refreshSafe(); })
+      .catch((e) => toast(`✖ new board: ${e.message}`, "err"));
+  });
+
+  /* ---- add-task modal ---- */
+  function closeAddModal() { $("addOverlay").classList.remove("show"); }
+  function openAddModal() {
+    $("addOverlay").classList.add("show");
+    setTimeout(() => { try { $("addTitle").focus(); } catch { /* focus is best-effort */ } }, 30);
+  }
+  $("btnAddToggle").addEventListener("click", openAddModal);
+  $("btnAddClose").addEventListener("click", closeAddModal);
+  $("btnAddCancel").addEventListener("click", closeAddModal);
+  $("addOverlay").addEventListener("click", (ev) => { if (ev.target === $("addOverlay")) closeAddModal(); });
+  $("addStatus").addEventListener("change", () => {
+    $("addBlockedWrap").style.display = $("addStatus").value === "blocked" ? "" : "none";
+  });
+  $("btnAddTask").addEventListener("click", () => {
+    const title = $("addTitle").value.trim();
+    if (!title) { toast("task title required", "err"); return; }
+    const st = $("addStatus").value;
+    const body = {
+      title,
+      board: $("addBoard").value || undefined,
+      owner: $("addOwner").value.trim() || "xtranslator-architect",
+      note: $("addNote").value.trim(),
+      status: st,
+    };
+    if (st === "blocked") {
+      const r = $("addBlocked").value.trim();
+      if (!r) { toast("blocked task needs a blocked reason", "err"); return; }
+      body.blocked_reason = r;
+    }
+    api("/api/tasks", { method: "POST", body })
+      .then(() => {
+        toast("task added", "ok");
+        $("addTitle").value = ""; $("addNote").value = ""; $("addBlocked").value = "";
+        closeAddModal();
+        refreshSafe();
+      })
+      .catch((e) => toast(`✖ add task: ${e.message}`, "err"));
+  });
+
+  $("mClose").addEventListener("click", closeModal);
+  $("overlay").addEventListener("click", (ev) => { if (ev.target === $("overlay")) closeModal(); });
+  document.addEventListener("keydown", (ev) => { if (ev.key === "Escape") { closeModal(); closeAddModal(); } });
+
+  // 1s elapsed tick for RUNNING cards — pure client-side, no re-fetch
+  setInterval(() => {
+    for (const el of document.querySelectorAll("[data-elapsed]")) {
+      const s = elapsedStr(el.getAttribute("data-elapsed"));
+      if (s) el.textContent = "⏱ " + s;
+    }
+  }, 1000);
+}
+
+wire();
+connectSse();
+loadState().catch((e) => {
+  toast("initial /api/state load failed: " + e.message, "err");
+  // UI stays up; SSE 'state' events will retry via refreshSafe
+});
+
+</script>
+</body>
+</html>
