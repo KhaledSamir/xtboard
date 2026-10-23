@@ -1,0 +1,11 @@
+services:
+  xtboard:
+    image: xtboard:latest
+    build: .
+    ports:
+      - "9119:9119"
+    environment:
+      - XTBOARD_HOST=0.0.0.0
+    volumes:
+      - ./data:/data
+    restart: unless-stopped

@@ -1,0 +1,381 @@
+#!/usr/bin/env node
+/*
+ * xtb — xtboard CLI (Dashboard V2). Zero npm deps; Node 24.
+ * Same state + semantics as server.js — everything goes through core.js.
+ *
+ * Env:
+ *   XTBOARD_HOME     state dir (default ~/.pi/xtboard)
+ *   XT_BY            actor name for history
+ *   XT_WORKER        default worker name for claim / next --claim
+ *   XT_WORKER_PID    recorded on claim so halt --kill can reach the tree
+ */
+"use strict";
+
+const path = require("node:path");
+const core = require(path.join(__dirname, "core.js"));
+
+function die(msg, code = 1) {
+  process.stderr.write(`xtb: ${msg}\n`);
+  process.exit(code);
+}
+function jdump(x) {
+  console.log(JSON.stringify(x, null, 2));
+}
+
+// ---- arg parsing (v1-style: flags take the next value or are bare booleans) ----
+function parseArgs(argv) {
+  const flags = { claim: false, kill: false, unload: false, note: null, status: null, owner: null, board: null, reason: null };
+  const rest = [];
+  const takesValue = { "--note": "note", "--status": "status", "--owner": "owner", "--board": "board", "--reason": "reason" };
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--kill") flags.kill = true;
+    else if (a === "--unload") flags.unload = true;
+    else if (a === "--claim") {
+      flags.claim = true;
+      const n = argv[i + 1];
+      if (n && !takesValue[n] && n !== "--kill" && n !== "--unload") {
+        flags.claimWorker = n;
+        i++;
+      }
+    } else if (takesValue[a]) {
+      flags[takesValue[a]] = argv[++i];
+    } else rest.push(a);
+  }
+  return { flags, rest };
+}
+
+function envPid() {
+  const v = parseInt(process.env.XT_WORKER_PID || "", 10);
+  return Number.isFinite(v) && v > 0 ? v : null;
+}
+function envWorker(fallback) {
+  return (process.env.XT_WORKER || "").trim() || (process.env.PI_SESSION_ID || "").trim() || fallback || "pi";
+}
+
+const ICONS = { todo: "○", ready: "▶", running: "●", blocked: "⛔", done: "✓" };
+function print_task(t) {
+  const icon = ICONS[t.status] || "?";
+  const extra = [];
+  if (t.claimed_by) extra.push(`(worker: ${t.claimed_by})`);
+  if (t.fails) extra.push(`⚠ ${t.fails} fail(s)`);
+  console.log(`${icon} ${t.id}  ${t.status.padEnd(8)} @${t.owner}  ${t.title}  ${extra.join("  ")}`.trimEnd());
+  if (t.board) {
+    const b = BOARD && BOARD.boards.find((x) => x.id === t.board);
+    if (b) console.log(`     board: ${b.name}`);
+  }
+  if (t.note) console.log(`     note: ${t.note}`);
+  if (t.blocked_reason) console.log(`     blocked_reason: ${t.blocked_reason}`);
+  if (t.last_error) console.log(`     last_error: ${t.last_error}`);
+}
+
+let BOARD = null;
+function withState(label, fn, by) {
+  const b = core.loadBoard();
+  BOARD = b;
+  return core.mutate(label, fn, by ? { by } : {});
+}
+
+const RANK = { ready: 0, running: 1, todo: 2, blocked: 3, done: 4 };
+
+function boardFilter(b, name) {
+  if (!name) return null;
+  const bb = b.boards.find((x) => x.id === name || x.name === name);
+  if (!bb) die(`no board matching '${name}'`);
+  return bb;
+}
+
+// ================= commands =================
+const CMD = {};
+
+CMD.boards = () => {
+  const b = core.loadBoard();
+  BOARD = b;
+  const out = { version: b.version, halted: core.haltInfo(), totals: core.countsIn(b), boards: [] };
+  for (const bd of b.boards) {
+    out.boards.push({
+      id: bd.id,
+      name: bd.name,
+      active: bd.active,
+      created: bd.created,
+      tasks: Object.values(b.tasks).filter((t) => t.board === bd.id).length,
+      counts: (c => { const x = { ...core.countsIn(b) }; void 0; return x; }) && coreCountsFor(b, bd),
+    });
+  }
+  jdump(out);
+};
+function coreCountsFor(b, bd) {
+  const c = { todo: 0, ready: 0, running: 0, blocked: 0, done: 0 };
+  for (const t of Object.values(b.tasks)) if (t.board === bd.id) c[t.status] = (c[t.status] || 0) + 1;
+  return c;
+}
+
+CMD.board = (rest) => {
+  const [sub, ...args] = rest;
+  if (sub === "add") {
+    if (!args[0]) die("usage: xtb board add <name>");
+    const bd = withState(`board added: ${args[0]}`, (b) => core.addBoardIn(b, args[0]));
+    jdump(bd);
+    return;
+  }
+  if (sub === "pause" || sub === "resume") {
+    if (!args[0]) die(`usage: xtb board ${sub} <id|name>`);
+    const active = sub === "resume";
+    const bd = withState(`board ${active ? "resumed" : "paused"}: ${args[0]}`, (b) => core.setBoardActiveIn(b, args[0], active));
+    console.log(`board ${bd.name} ${active ? "RESUMED (claims allowed)" : "PAUSED (claims refused)"}`);
+    return;
+  }
+  die(`unknown: xtb board ${sub || ""} (use: add | pause | resume)`);
+};
+
+CMD.add = (rest, flags) => {
+  if (!rest[0]) die("usage: xtb add <title> [--board B] [--owner x] [--status todo|ready|blocked] [--note n] [--reason r]");
+  if (!core.haltInfo()) void 0;
+  const t = withState(
+    `task added: ${flags.title || rest[0]} (owner=${flags.owner || "xtranslator-architect"}, board=${flags.board || "default"}, status=${flags.status || "todo"})`,
+    (b) => core.addTaskIn(b, {
+      title: rest[0],
+      boardId: flags.board,
+      owner: flags.owner,
+      status: flags.status,
+      note: flags.note,
+      blocked_reason: flags.reason,
+    })
+  );
+  BOARD = null;
+  print_task(core.findTask(core.loadBoard(), t.id));
+};
+
+CMD.list = (rest, flags) => {
+  const b = core.loadBoard();
+  BOARD = b;
+  const wantBoard = boardFilter(b, flags.board);
+  const list = Object.values(b.tasks)
+    .filter((t) => (!wantBoard || t.board === wantBoard.id) && (!flags.status || t.status === flags.status) && (!flags.owner || (t.owner || "").includes(flags.owner)))
+    .sort((a, x) => (RANK[a.status] - RANK[x.status]) || (a.created < x.created ? -1 : 1));
+  for (const t of list) print_task(t);
+};
+
+CMD.show = (rest) => {
+  if (!rest[0]) die("usage: xtb show ID");
+  const b = core.loadBoard();
+  BOARD = b;
+  const t = core.findTask(b, rest[0]);
+  print_task(t);
+  if (t.history && t.history.length) {
+    console.log("     history:");
+    for (const h of t.history.slice(-10)) {
+      console.log(`       ${h.ts}  [${h.by}]  ${h.changes.map((c) => `${c.field}: ${c.from} → ${c.to}`).join(", ")}`);
+    }
+  }
+};
+
+CMD.note = (rest, flags) => {
+  if (!rest[0] || (flags.note == null && !(rest[1] && String(rest[1]).trim()))) die("usage: xtb note ID 'text'  (--note 'text' also works)");
+  const text = flags.note != null ? flags.note : String(rest[1]).trim();
+  const t = withState(`note set on ${rest[0]}`, (b) => core.noteIn(b, rest[0], text));
+  print_task(t);
+};
+
+CMD.block = (rest, flags) => {
+  if (!rest[0]) die("usage: xtb block ID 'reason'");
+  const reason = flags.reason != null ? flags.reason : (rest[1] || "").trim();
+  if (!reason) die("block requires a reason: xtb block ID 'reason'");
+  const t = withState(`${rest[0]} blocked: ${reason}`, (b) => core.blockIn(b, rest[0], reason));
+  print_task(t);
+};
+
+CMD.unblock = (rest, flags) => {
+  if (!rest[0]) die("usage: xtb unblock ID [--note 'text']");
+  const t = withState(`${rest[0]} unblocked`, (b) => core.unblockIn(b, rest[0], flags.note));
+  print_task(t);
+};
+
+CMD.move = (rest, flags) => {
+  if (!rest[0] || !rest[1]) die("usage: xtb move ID <status> [--note '...']");
+  if (rest[1] === "blocked" && !flags.reason) die("move to blocked needs a reason: xtb move ID blocked --reason 'why'");
+  const t = withState(`${rest[0]} moved to ${rest[1]}`, (b) => {
+    const x = core.moveIn(b, rest[0], rest[1], flags.note);
+    if (rest[1] === "blocked") x.blocked_reason = flags.reason || x.blocked_reason || "";
+    return x;
+  });
+  print_task(t);
+};
+
+CMD.claim = (rest) => {
+  if (!rest[0]) die("usage: xtb claim ID [worker]   (honors XT_WORKER_PID, XT_BY, XT_WORKER, PI_SESSION_ID)");
+  const worker = { name: rest[1] || envWorker(), pid: envPid() };
+  const t = withState(
+    `task ${rest[0]} claimed by ${worker.name}${worker.pid ? ` (pid ${worker.pid})` : ""}`,
+    (b) => core.claimIn(b, rest[0], worker),
+    { by: worker.name }
+  );
+  print_task(t);
+};
+
+CMD.release = (rest) => {
+  if (!rest[0]) die("usage: xtb release ID");
+  const t = withState(`task ${rest[0]} released`, (b) => core.releaseIn(b, rest[0]));
+  print_task(t);
+};
+
+CMD.fail = (rest, flags) => {
+  if (!rest[0]) die("usage: xtb fail ID [reason]");
+  const reason = flags.reason != null ? flags.reason : rest[1];
+  const t = withState(`task ${rest[0]} failed: ${reason || "no reason given"}`, (b) => core.failIn(b, rest[0], reason));
+  print_task(t);
+};
+
+CMD.done = (rest, flags) => {
+  if (!rest[0]) die("usage: xtb done ID [note]");
+  const note = flags.note != null ? flags.note : rest[1];
+  const t = withState(`task ${rest[0]} done by ${envWorker()}`, (b) => core.doneIn(b, rest[0], note), { by: envWorker() });
+  print_task(t);
+};
+
+CMD.log = (rest, flags) => {
+  if (!rest[0] || (flags.note == null && !rest[1])) die("usage: xtb log ID 'msg'   (--note 'msg' also works)");
+  const msg = flags.note != null ? flags.note : rest[1].trim();
+  const t = withState(`log on ${rest[0]}: ${msg}`, (b) => core.logIn(b, rest[0], msg));
+  console.log(`logged on ${t.id}: ${msg}`);
+  const last = t.logs && t.logs[t.logs.length - 1];
+  if (last) {
+    console.log(`${last.ts} [${last.by}] ${msg}  (cap ${t.logs.length}/${core.LOGS_CAP})`);
+  }
+};
+
+CMD.next = (rest, flags) => {
+  if (core.halted()) die("orchestrator is HALTED — no new work may be claimed (xtb resume to lift)");
+  if (flags.claim) {
+    const worker = { name: flags.claimWorker || envWorker(), pid: envPid() };
+    const t = withState(
+      `task next-claimed by ${worker.name}${worker.pid ? ` (pid ${worker.pid})` : ""}`,
+      (b) => {
+        const t = core.pickNext(b, flags.board);
+        if (!t) throw new Error(`no ready tasks${flags.board ? ` on ${flags.board}` : " on any active board"}`);
+        return core.claimIn(b, t.id, worker);
+      },
+      { by: worker.name }
+    );
+    console.log(JSON.stringify(t));
+    return;
+  }
+  const b = core.loadBoard();
+  BOARD = b;
+  const t = core.pickNext(b, flags.board);
+  if (!t) die(`no ready tasks${flags.board ? ` on ${flags.board}` : " on any active board"}`);
+  print_task(t);
+};
+
+CMD.counts = (rest, flags) => {
+  const b = core.loadBoard();
+  jdump(core.countsIn(b, flags.board));
+};
+
+CMD.status = () => {
+  const b = core.loadBoard();
+  const h = core.haltInfo();
+  console.log(h ? `ORCHESTRATOR PAUSED  (since ${h.ts} — mode=${h.mode}${h.unloaded ? ", unloaded" : ""})` : "ORCHESTRATOR ACTIVE");
+  console.log(`boards: ${b.boards.map((x) => `${x.name}[${x.active ? "active" : "paused"}]`).join(" ")}`);
+  const c = core.countsIn(b);
+  console.log(`tasks: ${JSON.stringify(c)}`);
+  const running = Object.values(b.tasks).filter((t) => t.status === "running");
+  if (running.length) {
+    console.log("  running:");
+    for (const t of running) console.log(`     ${t.id} :: ${t.title} (${t.claimed_by}${t.claimed_at ? ", " + t.claimed_at : ""}${t.last_error ? ", err " + t.last_error : ""})`);
+  }
+  const ready = Object.values(b.tasks).filter((t) => t.status === "ready").sort((a, x) => (a.created < x.created ? -1 : 1));
+  if (ready.length) console.log(`queue (ready): ${ready.slice(0, 5).map((t) => t.id).join(", ")}${ready.length > 5 ? ` … (${ready.length - 5} more)` : ""}`);
+};
+
+CMD.run = (rest, flags) => {
+  if (!rest[0] || !rest[1] || !rest[2]) die("usage: xtb run JOB ok|fail 'detail'");
+  const detail = flags.note != null ? flags.note : rest[2].trim();
+  core.addRun(rest[0], rest[1], detail);
+  console.log(`run recorded: ${rest[0]} → ${rest[1]} (${detail})`);
+};
+
+CMD.runs = (rest) => {
+  const n = rest[0] ? parseInt(rest[0], 10) : 15;
+  jdump(core.readRuns(n));
+};
+
+CMD.halt = (rest, flags) => {
+  if (core.halted()) die("already paused (" + core.haltInfo().ts + ")");
+  const mode = flags.kill ? "kill" : "drain";
+  if (mode === "kill") console.log("⚠ PAUSE --KILL: killing any active pi worker (timeout N pi -p chains + recorded PID), reverting dirty ~/Development/XTranslator repos…");
+  const info = core.haltAction({ mode, unload: flags.unload });
+  console.log("");
+  console.log(`⏸ ORCHESTRATOR PAUSED (mode=${info.mode}${info.unloaded ? ", Ollama unloaded" : ""}) at ${info.ts}`);
+  if (info.marked.length) console.log(`   ${info.marked.length} running task(s) marked failed (failures counted)`);
+  if (info.killed.length) console.log(`   killed pids: ${info.killed.join(", ")}`);
+  if (info.reverted.length) console.log(`   reverted dirty repos: ${info.reverted.join(", ")}`);
+  if (info.unload_res && info.unload_res.skipped) console.log(`   ${info.unload_res.message}`);
+  if (!core.haltInfo()) die("halt did not persist — this is a bug");
+  console.log("   (resume to lift)");
+};
+
+CMD.resume = () => {
+  const res = core.resumeAction();
+  console.log(res.already_active ? "▶ ORCHESTRATOR ACTIVE (was not paused)" : `▶ ORCHESTRATOR RESUMED (was paused since ${res.resumed_from && res.resumed_from.ts})`);
+};
+
+CMD.import = (rest) => {
+  if (!rest[0]) die("usage: xtb import FILE   (v1 board.json → v2 state; tasks go to board 'features')");
+  const res = core.importFile(rest[0]);
+  console.log(`imported ${res.added} task(s) from ${rest[0]} → board '${res.targetName}'${res.kept ? ` (${res.kept} already present, kept)` : ""}`);
+};
+
+CMD.migrate = () => {
+  const os = require("node:os");
+  const f = path.join(os.homedir(), ".pi", "orchestrator", "board.json");
+  if (!require("node:fs").existsSync(f)) die(`nothing to migrate: ${f} not found`);
+  CMD.import([f]);
+};
+
+CMD.docs = () => {
+  console.log(
+    [
+      "xtb — xtboard CLI (state: $XTBOARD_HOME or ~/.pi/xtboard)",
+      "",
+      "boards      boards | board add <name> | board pause <b> | board resume <b>",
+      "tasks       add TITLE [--board B --owner x --status todo|ready|blocked --note n --reason r]",
+      "            list [--board B --status s --owner o]   show ID   note ID 'text'",
+      "            block ID 'reason'   unblock ID [--note]   move ID STATUS [--note][--reason]",
+      "            claim ID [worker]   release ID   fail ID 'reason'   done ID [note]   log ID 'msg'",
+      "            next [--board B] [--claim [worker]]     counts [--board B]     status",
+      "runs        run JOB ok|fail 'detail'   runs [N]",
+      "orchestrate halt [--kill] [--unload]   resume",
+      "migrate     import FILE   migrate (copies ~/.pi/orchestrator/board.json if present)",
+      "",
+      "Claim rules (v1 + v2): single winner (refuses if another worker claims it while you run).",
+      "  Paused boards refuse claims.  Global HALT refuses claims — resume to lift.",
+      "  fail increments failures and stores last_error.  next claims the oldest ready task",
+      "  on the earliest active board.  halt --kill marks running task(s) failed, kills the",
+      "  worker tree (timeout N pi -p chains + recorded worker PID), reverts dirty repos,",
+      "  and stops the Ollama model.  XT_WORKER_PID, XT_BY, XT_WORKER, PI_SESSION_ID honored.",
+      "",
+      "Web: server.js on 127.0.0.1:9119 (XTBOARD_HOST/PORT override) — UI + JSON API + SSE.",
+    ].join("\n")
+  );
+};
+
+// ================= dispatch =================
+function main() {
+  let argv = process.argv.slice(2).filter((a) => a !== "--docs");
+  if (!argv.length || argv[0] === "--help" || argv[0] === "-h") {
+    CMD.docs();
+    return;
+  }
+  const [cmd, ...rest] = argv;
+  if (!CMD[cmd]) die(`unknown command: ${cmd} (run xtb for the reference)`);
+  const { flags, rest: pos } = parseArgs(rest);
+  try {
+    CMD[cmd](pos, flags);
+  } catch (err) {
+    die(String((err && err.message) || err));
+  }
+}
+
+if (require.main === module) main();
+module.exports = { CMD };
