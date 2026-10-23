@@ -343,7 +343,9 @@ function addTaskIn(board, { title, boardId, owner, status, note, blocked_reason 
   return t;
 }
 
-function claimIn(board, tid, worker) {
+const ORCHESTRATORS = new Set(["pi", "web", "xtranslator-architect", "architect"]);
+
+function claimIn(board, tid, worker, opts = {}) {
   const name = typeof worker === "string" ? worker : (worker && worker.name) || "pi";
   const pid = worker && typeof worker === "object" ? worker.pid : null;
   if (halted())
@@ -353,6 +355,14 @@ function claimIn(board, tid, worker) {
   if (b && !b.active) throw httpErr(403, `board '${b.name}' is paused — resume the board before claiming`);
   if (t.status === "running" && t.claimed_by && t.claimed_by !== name)
     throw httpErr(403, `task ${t.id} already claimed by ${t.claimed_by}`);
+  const owner = String(t.owner || "").trim().toLowerCase();
+  const who = name.toLowerCase();
+  if (owner && who !== owner && !opts.force && !ORCHESTRATORS.has(who)) {
+    throw httpErr(
+      403,
+      `task ${t.id} is assigned to '${t.owner}' — claim by '${name}' refused (xtb: claim ID worker --force to override; web: send {"force":true})`
+    );
+  }
   t.status = "running";
   t.claimed_by = name;
   t.claimed_at = now();
@@ -473,13 +483,15 @@ function logIn(board, tid, msg, by) {
 // Oldest `ready` task across ACTIVE boards, in board order (earliest board
 // first; inside a board by created, then id). v1 has no boards, so this is the
 // v2 generalization of "oldest ready task".
-function pickNext(board, boardIdOrName) {
+function pickNext(board, boardIdOrName, owner) {
   const boards = boardIdOrName ? [findBoard(board, boardIdOrName)] : board.boards;
+  const want = owner ? String(owner).trim().toLowerCase() : "";
   for (const b of boards) {
     if (!b.active) continue;
-    const ready = Object.values(board.tasks)
+    let ready = Object.values(board.tasks)
       .filter((t) => t.board === b.id && t.status === "ready")
       .sort((a, x) => (a.created < x.created ? -1 : a.created > x.created ? 1 : a.id < x.id ? -1 : 1));
+    if (want) ready = ready.filter((t) => String(t.owner || "").trim().toLowerCase() === want);
     if (ready.length) return ready[0];
   }
   return null;

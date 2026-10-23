@@ -120,10 +120,8 @@
   .chip.done{background:#15301c; color:var(--done)}
   .empty{color:var(--faint); font-size:12px; font-style:italic; padding:4px 2px}
   /* ---------- add task ---------- */
-  #addWrap{margin-top:14px; background:var(--bg2); border:1px dashed var(--line2); border-radius:12px; padding:10px 12px; display:none}
-  #addWrap.open{display:block}
-  #addRow{display:flex; gap:8px; flex-wrap:wrap; align-items:center}
-  #addRow input,#addRow select{flex:1; min-width:140px}
+  #addWrap{display:none}
+  #addRow{display:none}
   /* ---------- right rail feed ---------- */
   #rail{
     width:330px; border-left:1px solid var(--line); background:var(--bg2);
@@ -151,6 +149,22 @@
   #modal .head .tid{font-family:var(--mono); font-size:11.5px; color:var(--faint)}
   #modal .head .x{margin-left:auto; background:none; border:none; color:var(--dim); font-size:18px; padding:2px 8px}
   #modal .body{padding:12px 16px 16px; display:grid; gap:12px}
+  /* ---- add-task modal ---- */
+  #addOverlay{display:none; position:fixed; inset:0; background:rgba(0,0,0,.62); z-index:60;
+    align-items:flex-start; justify-content:center; padding:12vh 16px 4vh; overflow:auto}
+  #addOverlay.show{display:flex}
+  #addModal{width:min(560px,100%); background:var(--bg2); border:1px solid var(--line2);
+    border-radius:14px; box-shadow:0 18px 60px rgba(0,0,0,.55)}
+  #addModal .head{display:flex; align-items:center; gap:10px; padding:14px 16px 10px; border-bottom:1px solid var(--line)}
+  #addModal .head .ttl{font-size:15px; font-weight:700}
+  #addModal .head .x{margin-left:auto; background:none; border:none; color:var(--dim); font-size:18px; padding:2px 8px; cursor:pointer}
+  #addModal .body{padding:14px 16px 16px; display:flex; flex-direction:column; gap:12px}
+  .fl{display:flex; flex-direction:column; gap:5px; font-size:12px; color:var(--dim)}
+  .fl input,.fl select{width:100%; min-width:0}
+  .frow{display:flex; gap:12px}
+  .frow .fl{flex:1}
+  #addBlockedWrap .breq{color:#ff9d94}
+  .addfoot{justify-content:flex-end}
   .kv{display:flex; gap:10px; font-size:13px; flex-wrap:wrap}
   .kv .k{color:var(--faint); min-width:80px}
   .section h3{font-size:11px; letter-spacing:.12em; text-transform:uppercase; color:var(--dim); margin:6px 0 6px}
@@ -206,21 +220,6 @@
       <span class="sub" id="boardSub"></span>
     </div>
     <div id="cols"></div>
-    <div id="addWrap">
-      <div id="addRow">
-        <input id="addTitle" placeholder="Task title (required)" style="flex:2">
-        <select id="addBoard"></select>
-        <select id="addStatus">
-          <option value="todo" selected>todo</option>
-          <option value="ready">ready</option>
-          <option value="blocked">blocked</option>
-        </select>
-        <input id="addOwner" placeholder="owner (xtranslator-architect)" style="flex:1.4">
-        <input id="addNote" placeholder="note (optional)" style="flex:1.4">
-        <input id="addBlocked" placeholder="blocked reason (if blocked)" style="flex:1.4" hidden>
-        <button class="btn primary" id="btnAddTask">Add</button>
-      </div>
-    </div>
   </section>
 
   <aside id="rail">
@@ -253,6 +252,33 @@
         <pre class="logs" id="mLogs"></pre>
       </div>
       <div class="actrow" id="mActs"></div>
+    </div>
+  </div>
+</div>
+
+<div id="addOverlay">
+  <div id="addModal">
+    <div class="head">
+      <span class="ttl">＋ New task</span>
+      <button class="x" id="btnAddClose" title="Close (Esc)">✕</button>
+    </div>
+    <div class="body">
+      <label class="fl"><span>Title</span><input id="addTitle" placeholder="Task title (required)"></label>
+      <div class="frow">
+        <label class="fl"><span>Board</span><select id="addBoard"></select></label>
+        <label class="fl"><span>Status</span><select id="addStatus">
+          <option value="todo" selected>todo</option>
+          <option value="ready">ready</option>
+          <option value="blocked">blocked</option>
+        </select></label>
+      </div>
+      <label class="fl"><span>Owner</span><input id="addOwner" placeholder="xtranslator-architect"></label>
+      <label class="fl"><span>Note</span><input id="addNote" placeholder="note (optional)"></label>
+      <label class="fl" id="addBlockedWrap" style="display:none"><span class="breq">Blocked reason (required)</span><input id="addBlocked" placeholder="why is it blocked?"></label>
+      <div class="actrow addfoot">
+        <button class="btn" id="btnAddCancel">Cancel</button>
+        <button class="btn primary" id="btnAddTask">Add task</button>
+      </div>
     </div>
   </div>
 </div>
@@ -773,9 +799,18 @@ function wire() {
       .catch((e) => toast(`✖ new board: ${e.message}`, "err"));
   });
 
-  $("btnAddToggle").addEventListener("click", () => $("addWrap").classList.toggle("open"));
+  /* ---- add-task modal ---- */
+  function closeAddModal() { $("addOverlay").classList.remove("show"); }
+  function openAddModal() {
+    $("addOverlay").classList.add("show");
+    setTimeout(() => { try { $("addTitle").focus(); } catch { /* focus is best-effort */ } }, 30);
+  }
+  $("btnAddToggle").addEventListener("click", openAddModal);
+  $("btnAddClose").addEventListener("click", closeAddModal);
+  $("btnAddCancel").addEventListener("click", closeAddModal);
+  $("addOverlay").addEventListener("click", (ev) => { if (ev.target === $("addOverlay")) closeAddModal(); });
   $("addStatus").addEventListener("change", () => {
-    $("addBlocked").hidden = $("addStatus").value !== "blocked";
+    $("addBlockedWrap").style.display = $("addStatus").value === "blocked" ? "" : "none";
   });
   $("btnAddTask").addEventListener("click", () => {
     const title = $("addTitle").value.trim();
@@ -797,6 +832,7 @@ function wire() {
       .then(() => {
         toast("task added", "ok");
         $("addTitle").value = ""; $("addNote").value = ""; $("addBlocked").value = "";
+        closeAddModal();
         refreshSafe();
       })
       .catch((e) => toast(`✖ add task: ${e.message}`, "err"));
@@ -804,7 +840,7 @@ function wire() {
 
   $("mClose").addEventListener("click", closeModal);
   $("overlay").addEventListener("click", (ev) => { if (ev.target === $("overlay")) closeModal(); });
-  document.addEventListener("keydown", (ev) => { if (ev.key === "Escape") closeModal(); });
+  document.addEventListener("keydown", (ev) => { if (ev.key === "Escape") { closeModal(); closeAddModal(); } });
 
   // 1s elapsed tick for RUNNING cards — pure client-side, no re-fetch
   setInterval(() => {

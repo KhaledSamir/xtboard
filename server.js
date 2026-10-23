@@ -277,7 +277,7 @@ function routeTask(path, method, req, res, next) {
   if (method === "POST" && action) {
     const actions = {
       log: { fn: (b, body) => core.logIn(b, id, body.msg, ACTOR), label: "logged (web)" },
-      claim: { fn: (b, body) => core.claimIn(b, id, { name: String(body.worker || ACTOR) }), label: "claimed by {worker}" },
+      claim: { fn: (b, body) => core.claimIn(b, id, { name: String(body.worker || ACTOR) }, { force: Boolean(body.force) }), label: "claimed by {worker}" },
       release: { fn: (b) => core.releaseIn(b, id), label: "released (web)" },
       fail: { fn: (b, body) => core.failIn(b, id, body.reason), label: "failed (web)" },
       done: { fn: (b, body) => core.doneIn(b, id, body.note), label: "done (web)" },

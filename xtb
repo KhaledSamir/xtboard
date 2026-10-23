@@ -203,11 +203,16 @@ CMD.move = (rest, flags) => {
 };
 
 CMD.claim = (rest) => {
-  if (!rest[0]) die("usage: xtb claim ID [worker]   (honors XT_WORKER_PID, XT_BY, XT_WORKER, PI_SESSION_ID)");
-  const worker = { name: rest[1] || envWorker(), pid: envPid() };
+  let force = false;
+  const pos = [];
+  for (const a of rest) {
+    if (a === "--force") force = true; else pos.push(a);
+  }
+  if (!pos[0]) die("usage: xtb claim ID [worker] [--force]   (honors XT_WORKER_PID, XT_BY, XT_WORKER, PI_SESSION_ID; --force overrides owner assignment)");
+  const worker = { name: pos[1] || envWorker(), pid: envPid() };
   const t = withState(
-    `task ${rest[0]} claimed by ${worker.name}${worker.pid ? ` (pid ${worker.pid})` : ""}`,
-    (b) => core.claimIn(b, rest[0], worker),
+    `task ${pos[0]} claimed by ${worker.name}${worker.pid ? ` (pid ${worker.pid})` : ""}`,
+    (b) => core.claimIn(b, pos[0], worker, { force }),
     { by: worker.name }
   );
   print_task(t);
@@ -251,9 +256,9 @@ CMD.next = (rest, flags) => {
     const t = withState(
       `task next-claimed by ${worker.name}${worker.pid ? ` (pid ${worker.pid})` : ""}`,
       (b) => {
-        const t = core.pickNext(b, flags.board);
-        if (!t) throw new Error(`no ready tasks${flags.board ? ` on ${flags.board}` : " on any active board"}`);
-        return core.claimIn(b, t.id, worker);
+        const t = core.pickNext(b, flags.board, flags.owner);
+        if (!t) throw new Error(`no ready tasks${flags.owner ? ` owned by ${flags.owner}` : ""}${flags.board ? ` on ${flags.board}` : " on any active board"}`);
+        return core.claimIn(b, t.id, worker, { force: false });
       },
       { by: worker.name }
     );
@@ -342,8 +347,8 @@ CMD.docs = () => {
       "tasks       add TITLE [--board B --owner x --status todo|ready|blocked --note n --reason r]",
       "            list [--board B --status s --owner o]   show ID   note ID 'text'",
       "            block ID 'reason'   unblock ID [--note]   move ID STATUS [--note][--reason]",
-      "            claim ID [worker]   release ID   fail ID 'reason'   done ID [note]   log ID 'msg'",
-      "            next [--board B] [--claim [worker]]     counts [--board B]     status",
+      "            claim ID [worker] [--force]   release ID   fail ID 'reason'   done ID [note]   log ID 'msg'",
+      "            next [--board B] [--claim [worker]] [--owner O]     counts [--board B]     status",
       "runs        run JOB ok|fail 'detail'   runs [N]",
       "orchestrate halt [--kill] [--unload]   resume",
       "migrate     import FILE   migrate (copies ~/.pi/orchestrator/board.json if present)",

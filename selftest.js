@@ -93,12 +93,12 @@ test("A1 default boards seeded on first run (features + bugs, active, v2)", () =
 
 let lifecycle; // { id, boardId }
 test("A2 add: task lands on first board with sane defaults + no history yet (v1 add rule)", () => {
-  const t = core.mutate(`task added: lifecycle (owner=w2, board=default, status=ready)`, (b) =>
-    core.addTaskIn(b, { title: "lifecycle task", owner: "w2", status: "ready" })
+  const t = core.mutate(`task added: lifecycle (owner=w1, board=default, status=ready)`, (b) =>
+    core.addTaskIn(b, { title: "lifecycle task", owner: "w1", status: "ready" })
   );
   const b = core.loadBoard();
   assertEq(t.status, "ready", "status");
-  assertEq(t.owner, "w2", "owner");
+  assertEq(t.owner, "w1", "owner");
   assertEq(t.board, b.boards[0].id, "board is first board");
   assertEq(t.fails, 0, "fails");
   assertEq((t.history || []).length, 0, "history after add (v1: add records no history)");
@@ -130,9 +130,9 @@ test("A4 claim by w1: running + claimed_by + history entry #1 (ready→running)"
   assertEq(h[0].by, "w1", "history actor");
 });
 
-test("A5 double-claim refusal: w2 refused, message names w1; w1 may re-claim", () => {
+test("A5 double-claim refusal: w2 (even forced) refused while w1 holds the claim, message names w1; w1 may re-claim", () => {
   expectErr(
-    () => core.mutate("double claim", (b) => core.claimIn(b, lifecycle.id, "w2")),
+    () => core.mutate("double claim", (b) => core.claimIn(b, lifecycle.id, "w2", { force: true })),
     /already claimed by w1/,
     "double-claim 403"
   );
@@ -195,7 +195,7 @@ test("A9 block/unblock stores reason; history records blocked_reason changes", (
 test("A10 paused board refuses claim, message names the board; resume restores claims", () => {
   const b0 = core.loadBoard();
   const bugs = b0.boards.find((x) => x.name === "bugs");
-  const t = core.mutate("add t10", (b) => core.addTaskIn(b, { title: "on paused board", status: "ready", boardId: bugs.id }));
+  const t = core.mutate("add t10", (b) => core.addTaskIn(b, { title: "on paused board", status: "ready", boardId: bugs.id, owner: "w1" }));
   core.mutate("board paused: bugs", (b) => core.setBoardActiveIn(b, bugs.id, false));
   expectErr(() => core.mutate("claim refused", (b) => core.claimIn(b, t.id, "w1")), /board 'bugs'.*paused/i, "paused-board 403");
   core.mutate("board resumed: bugs", (b) => core.setBoardActiveIn(b, bugs.id, true));
@@ -211,7 +211,7 @@ test("A10 paused board refuses claim, message names the board; resume restores c
 });
 
 test("A11 global halt refuses claim (message says HALT + resume); resume restores; `next` also refused while halted", () => {
-  const t0 = core.mutate("add t11", (b) => core.addTaskIn(b, { title: "halt me", status: "ready", owner: "w2" }));
+  const t0 = core.mutate("add t11", (b) => core.addTaskIn(b, { title: "halt me", status: "ready", owner: "w1" }));
   const info = core.haltAction({ mode: "drain", by: WEB });
   assertEq(info.mode, "drain", "mode");
   assert(core.halted(), "halt.json present");
@@ -367,7 +367,10 @@ test("D1 xtb CLI end-to-end: add → claim → log → note(positional) → fail
   const id = findTaskId(homeA, /cli lifecycle/);
   assert(id, "task visible in state");
   let r = cli(homeA, ["claim", id, "wcli"]);
-  assertEq(r.code, 0, "claim exit");
+  assert(r.code !== 0, "cross-pool claim refused (owner=w3, claimer=wcli)");
+  assertIn(r.out + r.err, "assigned to 'w3'", "refusal names the owner");
+  r = cli(homeA, ["claim", id, "wcli", "--force"]);
+  assertEq(r.code, 0, "claim --force exit");
   assertIn(r.out, "running", "claim out");
   assertIn(r.out, "wcli", "worker shown");
   r = cli(homeA, ["log", id, "hello from cli"]);
@@ -404,7 +407,7 @@ process.env.XTBOARD_REV_BASE = revBase;
 test("E1 halt --kill on a fake running task (dead worker pid): marked failed, no real kill, CLI output clean", () => {
   const ghost = 99999999;
   assert(!fs.existsSync(`/proc/${ghost}`), "ghost pid genuinely dead");
-  const t0 = core.mutate("add fake running", (b) => core.addTaskIn(b, { title: "fake worker task", status: "ready", owner: "w2" }));
+  const t0 = core.mutate("add fake running", (b) => core.addTaskIn(b, { title: "fake worker task", status: "ready", owner: "ghost" }));
   core.mutate("claim ghost", (b) => core.claimIn(b, t0.id, { name: "ghost", pid: ghost }), { by: "ghost" });
   const haltInfo = core.haltAction({ mode: "kill", by: WEB });
   assertEq(haltInfo.mode, "kill", "mode kill");
@@ -417,7 +420,7 @@ test("E1 halt --kill on a fake running task (dead worker pid): marked failed, no
   const rr = core.resumeAction({ by: WEB });
   assert(!rr.already_active, "resume ok");
   // CLI variant: fresh running task, then `xtb halt --kill` (output must not contain 'undefined')
-  const t1 = core.mutate("add fake running 2", (bb) => core.addTaskIn(bb, { title: "fake worker task 2", status: "ready", owner: "w2" }));
+  const t1 = core.mutate("add fake running 2", (bb) => core.addTaskIn(bb, { title: "fake worker task 2", status: "ready", owner: "ghost" }));
   core.mutate("claim ghost 2", (bb) => core.claimIn(bb, t1.id, { name: "ghost", pid: ghost }), { by: "ghost" });
   const r = cli(homeE, ["halt", "--kill"]);
   assertEq(r.code, 0, "xtb halt --kill exit");
@@ -427,6 +430,39 @@ test("E1 halt --kill on a fake running task (dead worker pid): marked failed, no
   b = core.loadBoard();
   assertEq(b.tasks[t1.id].fails, 1, "task 2 failed");
   core.resumeAction({ by: WEB });
+});
+
+// ================= F: owner assignment enforcement =================
+test("F1 owner enforcement: cross-pool claim refused; owner, orchestrator (web), and --force all allowed", () => {
+  const t = core.mutate("add owner task", (b) => core.addTaskIn(b, { title: "owner enforced", status: "ready", owner: "alpha" }));
+  let refused = false;
+  try { core.claimIn(core.loadBoard(), t.id, { name: "beta" }); } catch (e) { refused = /assigned to 'alpha'/.test(String(e.message)); }
+  assert(refused, "beta refused with owner named");
+  core.mutate("claim as owner", (b) => core.claimIn(b, t.id, { name: "alpha" }));
+  core.mutate("release", (b) => core.releaseIn(b, t.id));
+  core.mutate("claim as orchestrator web", (b) => core.claimIn(b, t.id, { name: "web" }));
+  core.mutate("release 2", (b) => core.releaseIn(b, t.id));
+  core.mutate("claim forced", (b) => core.claimIn(b, t.id, { name: "gamma" }, { force: true }));
+  assertEq(core.loadBoard().tasks[t.id].claimed_by, "gamma", "forced claim recorded");
+});
+
+test("F2 pickNext honors --owner filter and unassigned tasks are not picked for a named pool", () => {
+  const a = core.mutate("add a", (b) => core.addTaskIn(b, { title: "aa", status: "ready", owner: "alpha" }));
+  core.mutate("add c", (b) => core.addTaskIn(b, { title: "cc", status: "ready", owner: "alpha" }));
+  const z = core.mutate("add z", (b) => core.addTaskIn(b, { title: "zz", status: "ready", owner: "zeta" }));
+  core.mutate("add unassigned", (b) => core.addTaskIn(b, { title: "uu", status: "ready", owner: "" }));
+  const bA = core.loadBoard();
+  const oldestOf = (who) =>
+    Object.values(bA.tasks)
+      .filter((t) => t.status === "ready" && String(t.owner || "").trim().toLowerCase() === who)
+      .sort((x, y) => (x.created < y.created ? -1 : x.created > y.created ? 1 : x.id < y.id ? -1 : 1))[0] || null;
+  const firstAlpha = oldestOf("alpha");
+  assertEq(core.pickNext(bA, undefined, "zeta").id, oldestOf("zeta").id, "pool zeta gets only zeta tasks (oldest first)");
+  assertEq(core.pickNext(bA, undefined, "alpha").id, firstAlpha.id, "pool alpha gets alpha tasks only, oldest first (not zeta/unassigned)");
+  assertEq(core.pickNext(bA, undefined, "nobody"), null, "no tasks for pool nobody");
+  const n = core.pickNext(bA, undefined);
+  assert(n, "unfiltered pick still works");
+  assert(String(n.owner || "").toLowerCase() !== "zeta" || n.id === oldestOf("zeta").id, "unfiltered result is a sane ready task");
 });
 
 // ================= summary =================
